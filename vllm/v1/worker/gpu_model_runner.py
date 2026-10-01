@@ -345,11 +345,6 @@ class AsyncGPUModelRunnerOutput(AsyncModelRunnerOutput):
             if self._logprobs_tensors
             else None
         )
-        self._routed_experts_cpu = (
-            self._routed_experts.to_cpu_nonblocking()
-            if self._routed_experts is not None
-            else None
-        )
         self._num_nans_cpu = (
             self._num_nans.to("cpu", non_blocking=True)
             if self._num_nans is not None
