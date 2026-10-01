@@ -743,6 +743,27 @@ class VllmConfig:
                     ", ".join(v1_unsupported),
                 )
 
+        # Prefer V1 under bounce-buffer Confidential Computing until the
+        # staged-H2D / deferred-D2H copy opts are ported to Model Runner V2
+        # (see vllm.v1.conf_compute_utils / PR #52226). Explicit
+        # VLLM_USE_V2_MODEL_RUNNER wins above.
+        if current_platform.is_cuda() and current_platform.is_confidential_compute():
+            v1_unsupported = self._get_v1_model_runner_unsupported_features()
+            if not v1_unsupported:
+                logger.warning_once(
+                    "Defaulting to V1 model runner under NVIDIA Confidential "
+                    "Computing: bounce-buffer copy optimizations are V1-only "
+                    "until ported to V2. Set VLLM_USE_V2_MODEL_RUNNER=1 to "
+                    "override."
+                )
+                return False
+            logger.warning_once(
+                "Skipping the Confidential Computing V1 model runner default: "
+                "V1 does not support %s. Async scheduling will default off "
+                "without copy opts.",
+                ", ".join(v1_unsupported),
+            )
+
         if not HAS_TRITON:
             logger.warning_once(
                 "Model Runner V2 requires Triton; using the V1 model runner instead."
@@ -759,6 +780,19 @@ class VllmConfig:
             return False
 
         return True
+
+    def _async_scheduling_off_by_cc_default(self) -> bool:
+        """Whether stock defaults leave async scheduling off for CC.
+
+        Under bounce-buffer Confidential Computing, async scheduling only pays
+        off when the copy optimizations from PR #52226 (staged H2D / deferred
+        D2H, Model Runner V1 only today) are active. On Model Runner V2 they are
+        absent, so there is no overlap to reclaim and async scheduling is a net
+        loss. Only consulted when the user left ``async_scheduling`` unset.
+        """
+        from vllm.platforms import current_platform
+
+        return current_platform.is_confidential_compute() and self.use_v2_model_runner
 
     def _is_dflash_candidate_draft(self) -> bool:
         """Whether the DFlash draft has a candidate head, by the architecture the
@@ -1618,6 +1652,18 @@ class VllmConfig:
                 logger.warning_once(
                     "Async scheduling is disabled because the V1 model runner "
                     "does not support it with pipeline parallelism."
+                )
+                self.scheduler_config.async_scheduling = False
+            elif self._async_scheduling_off_by_cc_default():
+                # Bounce-buffer CC without copy opts (V2 today): async pays
+                # arbitration cost with no overlap to reclaim. When V1 is
+                # selected under CC (copy opts from PR #52226 active), fall
+                # through to True.
+                logger.warning_once(
+                    "Disabling async scheduling by default under NVIDIA "
+                    "Confidential Computing because Model Runner V2 does not "
+                    "yet include bounce-buffer copy optimizations. Pass "
+                    "--async-scheduling to override, or leave the V1 default."
                 )
                 self.scheduler_config.async_scheduling = False
             else:
