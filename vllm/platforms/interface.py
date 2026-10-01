@@ -8,6 +8,7 @@ import math
 import os
 import platform
 import sys
+from dataclasses import dataclass
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, NamedTuple
 
@@ -76,6 +77,30 @@ class PlatformEnum(enum.Enum):
     CPU = enum.auto()
     OOT = enum.auto()
     UNSPECIFIED = enum.auto()
+
+
+@dataclass(frozen=True)
+class ConfidentialComputeProfile:
+    """Cached NVIDIA Confidential Computing capability snapshot.
+
+    ``host_device_copies_synchronous`` is the bounce-buffer gate used by copy
+    optimizations and CC-aware stock defaults. Classic CC (``ccFeature``),
+    DevTools mode, and Hopper Protected PCIe (PPCIe) all force host-synchronous
+    bounce-buffer H2D/D2H — including PPCIe setups where
+    ``nvidia-smi conf-compute -f`` reports ``CC status: OFF``.
+    """
+
+    host_device_copies_synchronous: bool = False
+    cc_feature_enabled: bool = False
+    multi_gpu_mode: int = 0
+    nvlink_encrypted: bool = False
+    devtools: bool = False
+    source: str = "unavailable"
+
+    @property
+    def enabled(self) -> bool:
+        """Alias for bounce-buffer / host-synchronous copy semantics."""
+        return self.host_device_copies_synchronous
 
 
 class CpuArchEnum(enum.Enum):
@@ -245,7 +270,16 @@ class Platform:
     def is_confidential_compute(cls) -> bool:
         """Whether the device runs in a confidential-computing / memory-encrypted
         mode that forces host<->device copies synchronous. Defaults to False."""
-        return False
+        return cls.get_confidential_compute_profile().host_device_copies_synchronous
+
+    @classmethod
+    def get_confidential_compute_profile(cls) -> ConfidentialComputeProfile:
+        """Return a cached Confidential Computing capability profile.
+
+        Non-CUDA platforms return a disabled profile. CUDA overrides this with
+        NVML settings (including PPCIe) plus an env override.
+        """
+        return ConfidentialComputeProfile()
 
     @classmethod
     def get_pass_manager_cls(cls) -> str:

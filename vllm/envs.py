@@ -1878,10 +1878,10 @@ environment_variables: dict[str, Callable[[], Any]] = {
         int(os.getenv("VLLM_RAISE_ON_LOGIT_NANS", "0"))
     ),
     # Override NVIDIA Confidential Computing detection. Unset (default)
-    # auto-detects via NVML; "1" forces Confidential Computing on, "0" forces
-    # it off. Used to gate the Confidential Computing copy paths (see
-    # vllm.v1.conf_compute_utils) and to exercise them in CI / on boxes
-    # without NVML.
+    # auto-detects via NVML Settings (preferred; includes PPCIe / NVLE) with
+    # a State fallback; "1" forces bounce-buffer Confidential Computing on,
+    # "0" forces it off. Gates Confidential Computing copy paths (see
+    # vllm.v1.conf_compute_utils) and CC-aware stock scheduler/runner defaults.
     "VLLM_CONFIDENTIAL_COMPUTE": lambda: os.getenv("VLLM_CONFIDENTIAL_COMPUTE"),
     # Timeout (in seconds) for MooncakeConnector in PD disaggregated setup.
     "VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT": lambda: int(

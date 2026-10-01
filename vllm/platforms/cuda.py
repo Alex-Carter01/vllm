@@ -29,7 +29,13 @@ from vllm.logger import init_logger
 from vllm.utils.import_utils import import_pynvml
 from vllm.v1.attention.backends.registry import AttentionBackendEnum
 
-from .interface import DeviceCapability, Platform, PlatformEnum, in_wsl
+from .interface import (
+    ConfidentialComputeProfile,
+    DeviceCapability,
+    Platform,
+    PlatformEnum,
+    in_wsl,
+)
 
 if TYPE_CHECKING:
     from vllm.config import VllmConfig
@@ -207,50 +213,116 @@ def with_nvml_context(fn: Callable[_P, _R]) -> Callable[_P, _R]:
 
 
 @with_nvml_context
-def _nvml_confidential_compute_enabled() -> bool:
+def _nvml_read_conf_compute_profile() -> ConfidentialComputeProfile:
+    """Probe NVML for bounce-buffer Confidential Computing settings.
+
+    Prefer ``nvmlSystemGetConfComputeSettings`` (includes ``multiGpuMode`` so
+    Hopper PPCIe is visible even when ``ccFeature`` is off). Fall back to
+    ``nvmlSystemGetConfComputeState`` when Settings is unavailable.
+    """
+    # Settings API (preferred): exposes multiGpuMode for PPCIe / NVLE.
+    try:
+        from ctypes import byref
+
+        settings = pynvml.c_nvmlSystemConfComputeSettings_v1_t()
+        ret = pynvml.nvmlSystemGetConfComputeSettings(byref(settings))
+        if ret == pynvml.NVML_SUCCESS:
+            return _profile_from_nvml_fields(
+                cc_feature=int(settings.ccFeature),
+                multi_gpu_mode=int(settings.multiGpuMode),
+                devtools=int(settings.devToolsMode),
+                source="nvml_settings",
+            )
+        logger.debug(
+            "nvmlSystemGetConfComputeSettings returned %s; falling back to state",
+            ret,
+        )
+    except Exception as e:
+        logger.debug(
+            "nvmlSystemGetConfComputeSettings unavailable (%r); falling back to state",
+            e,
+        )
+
     state = pynvml.nvmlSystemGetConfComputeState()
-    # ccFeature != 0 means Confidential Computing is enabled (ON or devtools
-    # mode).
-    return int(getattr(state, "ccFeature", 0)) != 0
+    return _profile_from_nvml_fields(
+        cc_feature=int(getattr(state, "ccFeature", 0)),
+        multi_gpu_mode=0,
+        devtools=int(getattr(state, "devToolsMode", 0)),
+        source="nvml_state",
+    )
+
+
+def _profile_from_nvml_fields(
+    *,
+    cc_feature: int,
+    multi_gpu_mode: int,
+    devtools: int,
+    source: str,
+) -> ConfidentialComputeProfile:
+    cc_feature_enabled = cc_feature != pynvml.NVML_CC_SYSTEM_FEATURE_DISABLED
+    # DevTools CC workflows still use bounce buffers for CPU↔GPU copies.
+    devtools_on = devtools == pynvml.NVML_CC_SYSTEM_DEVTOOLS_MODE_ON
+    ppcie = multi_gpu_mode == pynvml.NVML_CC_SYSTEM_MULTIGPU_PROTECTED_PCIE
+    nvle = multi_gpu_mode == getattr(pynvml, "NVML_CC_SYSTEM_MULTIGPU_NVLE", 2)
+    # Bounce-buffer / host-synchronous copies: classic CC, DevTools, or PPCIe.
+    bounce = cc_feature_enabled or devtools_on or ppcie
+    # NVLink encryption: NVLE mode, or classic CC that is not PPCIe-only.
+    nvlink_encrypted = nvle or (cc_feature_enabled and not ppcie)
+    return ConfidentialComputeProfile(
+        host_device_copies_synchronous=bounce,
+        cc_feature_enabled=cc_feature_enabled,
+        multi_gpu_mode=multi_gpu_mode,
+        nvlink_encrypted=nvlink_encrypted,
+        devtools=devtools_on,
+        source=source,
+    )
 
 
 @cache
-def _detect_confidential_compute() -> bool:
-    """Whether the GPU is running in NVIDIA Confidential Computing mode.
+def _detect_confidential_compute_profile() -> ConfidentialComputeProfile:
+    """Detect NVIDIA Confidential Computing bounce-buffer semantics once.
 
-    Under bounce-buffer Confidential Computing, device<->host copies are
-    forced synchronous even with ``non_blocking=True``, which stalls the
-    thread that issues them (see vllm.v1.conf_compute_utils). Detected once
-    via NVML and cached.
-
-    Returns:
-        True if Confidential Computing is enabled (``ccFeature != 0``).
-        Overridable via ``VLLM_CONFIDENTIAL_COMPUTE=1/0``; on any NVML
-        failure, returns False.
+    Under bounce-buffer Confidential Computing, device↔host copies are forced
+    host-synchronous even with ``non_blocking=True`` (see
+    ``vllm.v1.conf_compute_utils``). Detection prefers NVML Settings (PPCIe /
+    NVLE), falls back to State, and honors ``VLLM_CONFIDENTIAL_COMPUTE``.
     """
     forced = envs.VLLM_CONFIDENTIAL_COMPUTE
     if forced is not None:
         enabled = forced == "1"
         logger.info(
             "NVIDIA Confidential Computing detection overridden by "
-            "VLLM_CONFIDENTIAL_COMPUTE=%r: %s",
+            "VLLM_CONFIDENTIAL_COMPUTE=%r: bounce_buffer=%s",
             forced,
-            "enabled" if enabled else "disabled",
+            enabled,
         )
-        return enabled
+        return ConfidentialComputeProfile(
+            host_device_copies_synchronous=enabled,
+            cc_feature_enabled=enabled,
+            multi_gpu_mode=0,
+            nvlink_encrypted=enabled,
+            devtools=False,
+            source="env",
+        )
     if not torch.cuda.is_available():
         logger.info("NVIDIA Confidential Computing not detected: CUDA unavailable")
-        return False
+        return ConfidentialComputeProfile(source="unavailable")
     try:
-        enabled = _nvml_confidential_compute_enabled()
+        profile = _nvml_read_conf_compute_profile()
     except Exception as e:
         logger.info("NVIDIA Confidential Computing not detected: NVML failed: %r", e)
-        return False
+        return ConfidentialComputeProfile(source="unavailable")
     logger.info(
-        "NVIDIA Confidential Computing %s via NVML",
-        "detected" if enabled else "not detected",
+        "NVIDIA Confidential Computing %s via %s "
+        "(bounce_buffer=%s, cc_feature=%s, multi_gpu_mode=%s, devtools=%s)",
+        "detected" if profile.host_device_copies_synchronous else "not detected",
+        profile.source,
+        profile.host_device_copies_synchronous,
+        profile.cc_feature_enabled,
+        profile.multi_gpu_mode,
+        profile.devtools,
     )
-    return enabled
+    return profile
 
 
 @cache
@@ -282,7 +354,11 @@ class CudaPlatformBase(Platform):
 
     @classmethod
     def is_confidential_compute(cls) -> bool:
-        return _detect_confidential_compute()
+        return cls.get_confidential_compute_profile().host_device_copies_synchronous
+
+    @classmethod
+    def get_confidential_compute_profile(cls) -> ConfidentialComputeProfile:
+        return _detect_confidential_compute_profile()
 
     @classmethod
     def import_kernels(cls) -> None:
@@ -412,6 +488,43 @@ class CudaPlatformBase(Platform):
                 "To raise the WSL2 VM memory ceiling, increase the `memory` "
                 "setting in %%USERPROFILE%%\\.wslconfig and run "
                 "`wsl --shutdown`."
+            )
+
+        if cls.is_confidential_compute():
+            if model_config is not None and model_config.enforce_eager:
+                logger.warning_once(
+                    "NVIDIA Confidential Computing is active and "
+                    "--enforce-eager was requested. Command-buffer / CUDA "
+                    "graph launches are more expensive under CC; prefer "
+                    "leaving CUDA graphs enabled unless debugging."
+                )
+            offload = vllm_config.offload_config
+            cpu_offload_active = offload is not None and (
+                offload.uva.cpu_offload_gb > 0
+                or bool(offload.uva.cpu_offload_params)
+                or offload.prefetch.offload_group_size > 0
+            )
+            if cpu_offload_active:
+                logger.warning_once(
+                    "CPU offload is enabled under NVIDIA Confidential "
+                    "Computing. Host↔device traffic uses encrypted bounce "
+                    "buffers and is typically limited to a few GB/s, which "
+                    "can severely limit throughput."
+                )
+            profile = cls.get_confidential_compute_profile()
+            logger.info_once(
+                "NVIDIA Confidential Computing active "
+                "(source=%s, bounce_buffer=%s, multi_gpu_mode=%s, "
+                "devtools=%s). Stock defaults: model_runner=%s, "
+                "async_scheduling=%s. Note: PR #52226 / published CC decode "
+                "numbers are B300 (NVLE); Hopper PPCIe remains an open "
+                "validation item.",
+                profile.source,
+                profile.host_device_copies_synchronous,
+                profile.multi_gpu_mode,
+                profile.devtools,
+                "v2" if vllm_config.use_v2_model_runner else "v1",
+                vllm_config.scheduler_config.async_scheduling,
             )
 
     @classmethod

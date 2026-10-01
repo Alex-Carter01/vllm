@@ -743,6 +743,27 @@ class VllmConfig:
                     ", ".join(v1_unsupported),
                 )
 
+        # Prefer V1 under bounce-buffer Confidential Computing until the
+        # staged-H2D / deferred-D2H copy opts are ported to Model Runner V2
+        # (see vllm.v1.conf_compute_utils / PR #52226). Explicit
+        # VLLM_USE_V2_MODEL_RUNNER wins above.
+        if current_platform.is_cuda() and current_platform.is_confidential_compute():
+            v1_unsupported = self._get_v1_model_runner_unsupported_features()
+            if not v1_unsupported:
+                logger.warning_once(
+                    "Defaulting to V1 model runner under NVIDIA Confidential "
+                    "Computing: bounce-buffer copy optimizations are V1-only "
+                    "until ported to V2. Set VLLM_USE_V2_MODEL_RUNNER=1 to "
+                    "override."
+                )
+                return False
+            logger.warning_once(
+                "Skipping the Confidential Computing V1 model runner default: "
+                "V1 does not support %s. Async scheduling will default off "
+                "without copy opts.",
+                ", ".join(v1_unsupported),
+            )
+
         if not HAS_TRITON:
             logger.warning_once(
                 "Model Runner V2 requires Triton; using the V1 model runner instead."
@@ -1618,6 +1639,20 @@ class VllmConfig:
                 logger.warning_once(
                     "Async scheduling is disabled because the V1 model runner "
                     "does not support it with pipeline parallelism."
+                )
+                self.scheduler_config.async_scheduling = False
+            elif (
+                current_platform.is_confidential_compute()
+                and self.use_v2_model_runner
+            ):
+                # Bounce-buffer CC without copy opts (V2 today): async pays
+                # arbitration cost with no overlap to reclaim. When V1 is
+                # selected under CC (copy opts active), fall through to True.
+                logger.warning_once(
+                    "Disabling async scheduling by default under NVIDIA "
+                    "Confidential Computing because Model Runner V2 does not "
+                    "yet include bounce-buffer copy optimizations. Pass "
+                    "--async-scheduling to override, or leave the V1 default."
                 )
                 self.scheduler_config.async_scheduling = False
             else:

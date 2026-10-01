@@ -209,6 +209,11 @@ class SchedulerConfig:
     async_scheduling: bool | None = None
     """If set to False, disable async scheduling. Async scheduling helps to
     avoid gaps in GPU utilization, leading to better latency and throughput.
+
+    Under NVIDIA Confidential Computing, stock defaults keep async scheduling
+    enabled when bounce-buffer copy optimizations are active (Model Runner V1)
+    and disable it when they are not (Model Runner V2 today). Explicit
+    ``--async-scheduling`` / ``--no-async-scheduling`` always wins.
     """
 
     stream_interval: int = Field(default=1, ge=1)
