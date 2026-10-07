@@ -271,7 +271,7 @@ mkdir -p ~/vllm && tar -xzf ~/vllm-src.tar.gz -C ~/vllm && cd ~/vllm
 command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh
 export PATH=\$HOME/.local/bin:\$PATH
 uv venv --python 3.12 ~/venv && . ~/venv/bin/activate
-VLLM_USE_PRECOMPILED=1 VLLM_PRECOMPILED_WHEEL_COMMIT=$BASE_COMMIT uv pip install -e .
+SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0.dev0+g${BRANCH_SHA:0:9} VLLM_USE_PRECOMPILED=1 VLLM_PRECOMPILED_WHEEL_COMMIT=$BASE_COMMIT uv pip install -e .
 uv pip install -r benchmarks/confidential_compute/requirements.txt
 vllm --version
 "
