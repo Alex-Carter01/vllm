@@ -290,6 +290,7 @@ fi
 
 MICRO_FLAGS="--quick"; [[ $FULL_MICROBENCH -eq 1 ]] && MICRO_FLAGS=""
 RUN_CMD=". ~/venv/bin/activate && cd ~/vllm && mkdir -p ~/results && \
+export VLLM_USE_FLASHINFER_SAMPLER=0 && \
 bash benchmarks/confidential_compute/run.sh $MICRO_FLAGS 2>&1 | tee ~/results/microbench.log && \
 bash benchmarks/confidential_compute/run_matrix.sh --model '$MODEL' --arms '$ARMS' \
 --concurrency '$CONCURRENCY' --out ~/results 2>&1 | tee ~/results/matrix.log"

@@ -108,6 +108,7 @@ fi
 
 IFS=',' read -r -a ARM_LIST <<<"$ARMS"
 IFS=',' read -r -a CONC_LIST <<<"$CONCURRENCY"
+FAILED_ARMS=()
 
 for arm in "${ARM_LIST[@]}"; do
     spec="$(arm_spec "$arm")"
@@ -132,11 +133,15 @@ for arm in "${ARM_LIST[@]}"; do
             if ! kill -0 "$SERVER_PID" 2>/dev/null; then
                 echo "error: server for arm $arm exited early; see $log" >&2
                 tail -n 40 "$log" >&2 || true
-                exit 4
+                FAILED_ARMS+=("$arm")
+                stop_server
+                continue 2
             fi
             if [[ $waited -ge $READY_TIMEOUT ]]; then
                 echo "error: server for arm $arm not ready after ${READY_TIMEOUT}s" >&2
-                exit 4
+                FAILED_ARMS+=("$arm")
+                stop_server
+                continue 2
             fi
             sleep 5
             waited=$((waited + 5))
@@ -166,5 +171,12 @@ done
 echo
 echo "+ $PYTHON $(dirname "${BASH_SOURCE[0]}")/summarize_matrix.py $OUT"
 if [[ $DRY_RUN -eq 0 ]]; then
-    "$PYTHON" "$(dirname "${BASH_SOURCE[0]}")/summarize_matrix.py" "$OUT" | tee "$OUT/summary.md"
+    if [[ ${#FAILED_ARMS[@]} -lt ${#ARM_LIST[@]} ]]; then
+        "$PYTHON" "$(dirname "${BASH_SOURCE[0]}")/summarize_matrix.py" "$OUT" | tee "$OUT/summary.md"
+    fi
+    if [[ ${#FAILED_ARMS[@]} -gt 0 ]]; then
+        echo "error: arms that failed to start: ${FAILED_ARMS[*]}" >&2
+        printf '%s\n' "${FAILED_ARMS[@]}" >"$OUT/failed_arms.txt"
+        exit 4
+    fi
 fi
