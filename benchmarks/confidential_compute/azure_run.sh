@@ -48,6 +48,7 @@ IMAGE="/CommunityGalleries/cgpuimage-db870bae-5bcf-4120-9415-b841adef61d3/Images
 # Fallback hourly USD if the public price API is unreachable (East US 2 listing).
 FALLBACK_RATE="7.89"
 FULL_MICROBENCH=0
+CHECK_OUTPUTS=0
 DRY_RUN=0
 OUT="cc_azure_results_$(date +%Y%m%d_%H%M%S)"
 
@@ -67,6 +68,7 @@ while [[ $# -gt 0 ]]; do
         --hf-token-env) HF_TOKEN_ENV="$2"; shift 2 ;;
         --out) OUT="$2"; shift 2 ;;
         --full-microbench) FULL_MICROBENCH=1; shift ;;
+        --check-outputs) CHECK_OUTPUTS=1; shift ;;
         --dry-run) DRY_RUN=1; shift ;;
         -h|--help) usage 0 ;;
         *) echo "unknown argument: $1" >&2; usage 2 ;;
@@ -289,11 +291,12 @@ if [[ $DRY_RUN -eq 0 ]]; then
 fi
 
 MICRO_FLAGS="--quick"; [[ $FULL_MICROBENCH -eq 1 ]] && MICRO_FLAGS=""
+MATRIX_FLAGS=""; [[ $CHECK_OUTPUTS -eq 1 ]] && MATRIX_FLAGS="--check-outputs"
 RUN_CMD=". ~/venv/bin/activate && cd ~/vllm && mkdir -p ~/results && \
 export VLLM_USE_FLASHINFER_SAMPLER=0 && \
 bash benchmarks/confidential_compute/run.sh $MICRO_FLAGS 2>&1 | tee ~/results/microbench.log && \
 bash benchmarks/confidential_compute/run_matrix.sh --model '$MODEL' --arms '$ARMS' \
---concurrency '$CONCURRENCY' --out ~/results 2>&1 | tee ~/results/matrix.log"
+--concurrency '$CONCURRENCY' $MATRIX_FLAGS --out ~/results 2>&1 | tee ~/results/matrix.log"
 
 if [[ $DRY_RUN -eq 0 ]]; then
     # Everything goes over stdin: the HF token (if any) never appears on a

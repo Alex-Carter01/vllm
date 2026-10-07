@@ -38,6 +38,7 @@ PORT=8000
 READY_TIMEOUT=1200   # seconds to wait for the server to come up
 PYTHON="${PYTHON:-python3}"
 DRY_RUN=0
+CHECK_OUTPUTS=0
 ALLOW_NON_CC=0
 
 usage() { sed -n '4,28p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
@@ -53,6 +54,7 @@ while [[ $# -gt 0 ]]; do
         --port) PORT="$2"; shift 2 ;;
         --ready-timeout) READY_TIMEOUT="$2"; shift 2 ;;
         --dry-run) DRY_RUN=1; shift ;;
+        --check-outputs) CHECK_OUTPUTS=1; shift ;;
         --allow-non-cc) ALLOW_NON_CC=1; shift ;;
         -h|--help) usage 0 ;;
         *) echo "unknown argument: $1" >&2; usage 2 ;;
@@ -151,6 +153,11 @@ for arm in "${ARM_LIST[@]}"; do
             >"$OUT/arm_${arm}_resolved.txt" || true
     else
         echo "+ wait for http://127.0.0.1:$PORT/health"
+    fi
+
+    if [[ $CHECK_OUTPUTS -eq 1 ]]; then
+        run "$PYTHON" "$(dirname "${BASH_SOURCE[0]}")/check_outputs.py" \
+            --model "$MODEL" --port "$PORT" --out "$OUT/arm_${arm}_outputs.json"
     fi
 
     for conc in "${CONC_LIST[@]}"; do
