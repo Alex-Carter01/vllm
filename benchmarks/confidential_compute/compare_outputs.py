@@ -4,9 +4,8 @@
 """Compare arm_*_outputs.json files from run_matrix.sh --check-outputs.
 
 Reports, per arm, how many greedy completions match a reference arm exactly
-and a crude garbage score (share of characters that are not printable text).
-A fast arm that scores near 0% match with a high garbage score is producing
-wrong output.
+and a repetition score (distinct characters per character, near 0 for junk such as
+'! ! !'). An arm with ~0 matches and a low ratio is producing wrong output.
 
 Usage:
     compare_outputs.py RESULTS_DIR [--reference B]
@@ -19,11 +18,9 @@ import os
 import sys
 
 
-def garbage_share(text: str) -> float:
-    if not text:
-        return 1.0
-    bad = sum(1 for c in text if not (c.isprintable() or c in "\n\t"))
-    return bad / len(text)
+def distinct_char_ratio(text: str) -> float:
+    """Distinct characters per character; junk like '! ! !' or '1111' is near 0."""
+    return len(set(text)) / len(text) if text else 0.0
 
 
 def main() -> int:
@@ -43,13 +40,13 @@ def main() -> int:
 
     ref = outputs[args.reference]
     print(f"reference arm: {args.reference} ({len(ref)} prompts)\n")
-    print("| arm | exact match vs ref | empty | mean garbage share |")
+    print("| arm | exact match vs ref | empty | mean distinct-char ratio |")
     print("| --- | --- | --- | --- |")
     for arm, texts in outputs.items():
         match = sum(a == b for a, b in zip(texts, ref))
         empty = sum(not t.strip() for t in texts)
-        garbage = sum(garbage_share(t) for t in texts) / max(len(texts), 1)
-        print(f"| {arm} | {match}/{len(ref)} | {empty} | {garbage:.2f} |")
+        ratio = sum(distinct_char_ratio(t) for t in texts) / max(len(texts), 1)
+        print(f"| {arm} | {match}/{len(ref)} | {empty} | {ratio:.2f} |")
     return 0
 
 
